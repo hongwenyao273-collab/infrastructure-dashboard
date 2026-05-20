@@ -40,26 +40,17 @@ import {
 /*
   ENGG3112 Multi-Criteria Infrastructure Evaluation Dashboard
   ------------------------------------------------------------
-  Main logic:
-  1. Project scores are project-level indicator data.
-  2. Stakeholder weights are adjustable decision assumptions.
-  3. Composite score = F score × F weight + E score × E weight + S score × S weight.
-  4. Project selection does NOT automatically change active weights.
-  5. Baseline button applies the selected project's initial weights.
-  6. Live Project Ranking shows weighted score contributions that update with the sliders.
+  Updated design logic:
+  1. Financial + Environmental + Social weights always equal 100%.
+  2. Moving one slider automatically redistributes the remaining percentage to the other two weights.
+  3. Project selection does not change the active weights.
+  4. Reset Data applies the selected project's initial weighting assumption.
+  5. Live Project Ranking shows applied current weights and contribution calculation.
 */
 
-const STORAGE_KEY = "engg3112_sensitivity_dashboard_projects_v5";
+const STORAGE_KEY = "engg3112_sensitivity_dashboard_projects_v6";
 
-const lineColors = [
-  "#2563eb",
-  "#059669",
-  "#9333ea",
-  "#f59e0b",
-  "#06b6d4",
-  "#ef4444",
-  "#64748b",
-];
+const lineColors = ["#2563eb", "#059669", "#9333ea", "#f59e0b", "#06b6d4", "#ef4444", "#64748b"];
 
 const stakeholderTypes = [
   "Council Planner",
@@ -207,15 +198,37 @@ function normaliseWeights(rawWeights) {
   const s = clampNumber(rawWeights.social, 0, 100);
   const total = f + e + s;
 
-  if (total === 0) {
-    return { financial: 33, environmental: 33, social: 34 };
-  }
+  if (total === 0) return { financial: 33, environmental: 33, social: 34 };
 
   const financial = Math.round((f / total) * 100);
   const environmental = Math.round((e / total) * 100);
   const social = 100 - financial - environmental;
-
   return { financial, environmental, social };
+}
+
+function redistributeWeights(previousWeights, changedKey, newValue) {
+  const keys = ["financial", "environmental", "social"];
+  const value = clampNumber(newValue, 0, 100);
+  const otherKeys = keys.filter((key) => key !== changedKey);
+  const remaining = 100 - value;
+  const oldOtherTotal = otherKeys.reduce((sum, key) => sum + previousWeights[key], 0);
+
+  let firstOther;
+  if (oldOtherTotal === 0) {
+    firstOther = Math.round(remaining / 2);
+  } else {
+    firstOther = Math.round((previousWeights[otherKeys[0]] / oldOtherTotal) * remaining);
+  }
+
+  firstOther = clampNumber(firstOther, 0, remaining);
+  const secondOther = remaining - firstOther;
+
+  return {
+    ...previousWeights,
+    [changedKey]: value,
+    [otherKeys[0]]: firstOther,
+    [otherKeys[1]]: secondOther,
+  };
 }
 
 function calculateScore(project, weights) {
@@ -239,59 +252,23 @@ function getContributions(project, weights) {
 
 function rankProjects(projects, weights) {
   return projects
-    .map((project) => ({
-      ...project,
-      score: calculateScore(project, weights),
-    }))
+    .map((project) => ({ ...project, score: calculateScore(project, weights) }))
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
-    .map((project, index) => ({
-      ...project,
-      rank: index + 1,
-    }));
+    .map((project, index) => ({ ...project, rank: index + 1 }));
 }
 
 function getScenarioList(activeWeights) {
-  const balanced = normaliseWeights(activeWeights);
-
   return [
-    {
-      id: "current",
-      name: "Current / Baseline",
-      shortName: "Current",
-      weights: balanced,
-    },
-    {
-      id: "financial",
-      name: "Financial Priority",
-      shortName: "Financial",
-      weights: { financial: 50, environmental: 25, social: 25 },
-    },
-    {
-      id: "environmental",
-      name: "Environmental Priority",
-      shortName: "Environmental",
-      weights: { financial: 20, environmental: 60, social: 20 },
-    },
-    {
-      id: "social",
-      name: "Social Priority",
-      shortName: "Social",
-      weights: { financial: 20, environmental: 20, social: 60 },
-    },
-    {
-      id: "equal",
-      name: "Equal Weights",
-      shortName: "Equal",
-      weights: { financial: 33, environmental: 33, social: 34 },
-    },
+    { id: "current", name: "Current / Baseline", shortName: "Current", weights: activeWeights },
+    { id: "financial", name: "Financial Priority", shortName: "Financial", weights: { financial: 50, environmental: 25, social: 25 } },
+    { id: "environmental", name: "Environmental Priority", shortName: "Environmental", weights: { financial: 20, environmental: 60, social: 20 } },
+    { id: "social", name: "Social Priority", shortName: "Social", weights: { financial: 20, environmental: 20, social: 60 } },
+    { id: "equal", name: "Equal Weights", shortName: "Equal", weights: { financial: 33, environmental: 33, social: 34 } },
   ];
 }
 
 function computeScenarioResults(projects, scenarios) {
-  return scenarios.map((scenario) => ({
-    ...scenario,
-    ranked: rankProjects(projects, scenario.weights),
-  }));
+  return scenarios.map((scenario) => ({ ...scenario, ranked: rankProjects(projects, scenario.weights) }));
 }
 
 function getRobustnessSummary(projects, scenarioResults) {
@@ -302,7 +279,6 @@ function getRobustnessSummary(projects, scenarioResults) {
       const result = scenario.ranked.find((item) => item.id === project.id);
       return result?.rank ?? projects.length;
     });
-
     const scores = scenarioResults.map((scenario) => {
       const result = scenario.ranked.find((item) => item.id === project.id);
       return result?.score ?? 0;
@@ -326,36 +302,23 @@ function getRobustnessSummary(projects, scenarioResults) {
       topCount,
       averageScore: Number(averageScore.toFixed(1)),
       robustnessLabel:
-        rankRange <= 1
-          ? "High robustness"
-          : rankRange <= 2
-            ? "Moderate robustness"
-            : "Sensitive to weighting",
+        rankRange <= 1 ? "High robustness" : rankRange <= 2 ? "Moderate robustness" : "Sensitive to weighting",
     };
   });
 }
 
 function classifyPriority(weights) {
-  const normalised = normaliseWeights(weights);
-
   const entries = [
-    ["Financial Priority", normalised.financial, "financial performance has the largest weighting"],
-    [
-      "Environmental Priority",
-      normalised.environmental,
-      "environmental performance has the largest weighting",
-    ],
-    ["Social Priority", normalised.social, "social performance has the largest weighting"],
+    ["Financial Priority", weights.financial, "financial performance has the largest weighting"],
+    ["Environmental Priority", weights.environmental, "environmental performance has the largest weighting"],
+    ["Social Priority", weights.social, "social performance has the largest weighting"],
   ].sort((a, b) => b[1] - a[1]);
 
   const [label, topValue, reason] = entries[0];
   const [, secondValue] = entries[1];
 
   if (topValue - secondValue <= 5) {
-    return {
-      label: "Balanced / Mixed Priority",
-      reason: "no single category clearly dominates the weighting assumption",
-    };
+    return { label: "Balanced / Mixed Priority", reason: "no single category clearly dominates the weighting assumption" };
   }
 
   return { label, reason };
@@ -365,10 +328,8 @@ function loadInitialProjects() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return defaultProjects;
-
     const parsed = JSON.parse(stored);
     if (!Array.isArray(parsed) || parsed.length === 0) return defaultProjects;
-
     return parsed;
   } catch {
     return defaultProjects;
@@ -381,7 +342,6 @@ function saveProjects(projects) {
 
 function toEditorForm(project) {
   if (!project) return emptyProjectForm;
-
   return {
     name: project.name || "",
     shortName: project.shortName || "",
@@ -401,25 +361,14 @@ function toEditorForm(project) {
 }
 
 function Card({ children, className = "" }) {
-  return (
-    <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}>
-      {children}
-    </div>
-  );
+  return <div className={`rounded-3xl border border-slate-200 bg-white shadow-sm ${className}`}>{children}</div>;
 }
 
 function CardContent({ children, className = "" }) {
   return <div className={`p-5 ${className}`}>{children}</div>;
 }
 
-function Button({
-  children,
-  className = "",
-  variant = "default",
-  onClick,
-  disabled = false,
-  type = "button",
-}) {
+function Button({ children, className = "", variant = "default", onClick, disabled = false, type = "button" }) {
   const variantClass =
     variant === "outline"
       ? "border border-slate-200 bg-white text-slate-800 hover:bg-slate-50"
@@ -432,9 +381,7 @@ function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`${variantClass} rounded-2xl px-4 py-3 text-sm font-semibold transition ${
-        disabled ? "cursor-not-allowed opacity-50" : ""
-      } ${className}`}
+      className={`${variantClass} rounded-2xl px-4 py-3 text-sm font-semibold transition ${disabled ? "cursor-not-allowed opacity-50" : ""} ${className}`}
     >
       {children}
     </button>
@@ -442,13 +389,7 @@ function Button({
 }
 
 function ScoreBar({ value, tone = "slate", max = 100 }) {
-  const colorMap = {
-    slate: "bg-slate-900",
-    blue: "bg-blue-600",
-    green: "bg-emerald-600",
-    purple: "bg-purple-600",
-  };
-
+  const colorMap = { slate: "bg-slate-900", blue: "bg-blue-600", green: "bg-emerald-600", purple: "bg-purple-600" };
   const width = max <= 0 ? 0 : clampNumber((value / max) * 100);
 
   return (
@@ -465,11 +406,7 @@ function WeightPill({ label, value, tone }) {
     purple: "bg-purple-50 text-purple-700",
   }[tone];
 
-  return (
-    <span className={`rounded-2xl px-3 py-2 text-sm font-semibold ${toneClass}`}>
-      {label} {value}%
-    </span>
-  );
+  return <span className={`rounded-2xl px-3 py-2 text-sm font-semibold ${toneClass}`}>{label} {value}%</span>;
 }
 
 function NumberField({ label, value, onChange, suffix = "" }) {
@@ -518,105 +455,35 @@ function ProjectFormFields({ form, setForm, mode = "edit" }) {
 
   return (
     <div className="space-y-4">
-      <TextField
-        label="Project Name"
-        value={form.name}
-        onChange={(value) => update("name", value)}
-        placeholder="Project name"
-      />
+      <TextField label="Project Name" value={form.name} onChange={(value) => update("name", value)} placeholder="Project name" />
 
       <div className="grid grid-cols-2 gap-3">
-        <TextField
-          label="Short Name"
-          value={form.shortName}
-          onChange={(value) => update("shortName", value)}
-          placeholder="Short name for chart"
-        />
-        <TextField
-          label="Type"
-          value={form.type}
-          onChange={(value) => update("type", value)}
-          placeholder="Project type"
-        />
-        <TextField
-          label="Location"
-          value={form.location}
-          onChange={(value) => update("location", value)}
-          placeholder="Location"
-        />
-        <TextField
-          label="Cost"
-          value={form.cost}
-          onChange={(value) => update("cost", value)}
-          placeholder="Cost"
-        />
-        <TextField
-          label="Time"
-          value={form.time}
-          onChange={(value) => update("time", value)}
-          placeholder="Time"
-        />
-        <TextField
-          label="Confidence"
-          value={form.confidence}
-          onChange={(value) => update("confidence", value)}
-          placeholder="Confidence"
-        />
+        <TextField label="Short Name" value={form.shortName} onChange={(value) => update("shortName", value)} placeholder="Short name for chart" />
+        <TextField label="Type" value={form.type} onChange={(value) => update("type", value)} placeholder="Project type" />
+        <TextField label="Location" value={form.location} onChange={(value) => update("location", value)} placeholder="Location" />
+        <TextField label="Cost" value={form.cost} onChange={(value) => update("cost", value)} placeholder="Cost" />
+        <TextField label="Time" value={form.time} onChange={(value) => update("time", value)} placeholder="Time" />
+        <TextField label="Confidence" value={form.confidence} onChange={(value) => update("confidence", value)} placeholder="Confidence" />
       </div>
 
       <div className="rounded-2xl bg-white p-3 shadow-sm">
         <h4 className="mb-2 font-semibold">Project Indicator Scores</h4>
-        <p className="mb-3 text-sm text-slate-500">
-          These are project performance scores. Each score is capped at 100.
-        </p>
-
+        <p className="mb-3 text-sm text-slate-500">These are project performance scores. Each score is capped at 100.</p>
         <div className="grid grid-cols-3 gap-3">
-          <NumberField
-            label="Financial"
-            value={form.financialScore}
-            onChange={(value) => update("financialScore", value)}
-          />
-          <NumberField
-            label="Environmental"
-            value={form.environmentalScore}
-            onChange={(value) => update("environmentalScore", value)}
-          />
-          <NumberField
-            label="Social"
-            value={form.socialScore}
-            onChange={(value) => update("socialScore", value)}
-          />
+          <NumberField label="Financial" value={form.financialScore} onChange={(value) => update("financialScore", value)} />
+          <NumberField label="Environmental" value={form.environmentalScore} onChange={(value) => update("environmentalScore", value)} />
+          <NumberField label="Social" value={form.socialScore} onChange={(value) => update("socialScore", value)} />
         </div>
       </div>
 
       <div className="rounded-2xl bg-white p-3 shadow-sm">
         <h4 className="mb-2 font-semibold">Initial Weighting Assumption</h4>
-        <p className="mb-3 text-sm text-slate-500">
-          These weights are used only when you press the Baseline button. They are normalised to
-          100%.
-        </p>
-
+        <p className="mb-3 text-sm text-slate-500">These weights are used when Reset Data is pressed for the selected project. They are normalised to 100%.</p>
         <div className="grid grid-cols-3 gap-3">
-          <NumberField
-            label="Financial"
-            value={form.financialWeight}
-            onChange={(value) => update("financialWeight", value)}
-            suffix="%"
-          />
-          <NumberField
-            label="Environmental"
-            value={form.environmentalWeight}
-            onChange={(value) => update("environmentalWeight", value)}
-            suffix="%"
-          />
-          <NumberField
-            label="Social"
-            value={form.socialWeight}
-            onChange={(value) => update("socialWeight", value)}
-            suffix="%"
-          />
+          <NumberField label="Financial" value={form.financialWeight} onChange={(value) => update("financialWeight", value)} suffix="%" />
+          <NumberField label="Environmental" value={form.environmentalWeight} onChange={(value) => update("environmentalWeight", value)} suffix="%" />
+          <NumberField label="Social" value={form.socialWeight} onChange={(value) => update("socialWeight", value)} suffix="%" />
         </div>
-
         <div className="mt-3 flex flex-wrap gap-2">
           <WeightPill label="F" value={scoreWeights.financial} tone="blue" />
           <WeightPill label="E" value={scoreWeights.environmental} tone="green" />
@@ -676,22 +543,13 @@ function AddProjectForm({ onAdd }) {
   }
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-4"
-    >
+    <form onSubmit={handleSubmit} className="space-y-4 rounded-3xl border border-slate-200 bg-slate-50 p-4">
       <div>
         <h3 className="text-lg font-semibold">Add New Project</h3>
-        <p className="mt-1 text-sm text-slate-500">
-          Create a new project with scores and baseline weights.
-        </p>
+        <p className="mt-1 text-sm text-slate-500">Create a new project with scores and baseline weights.</p>
       </div>
-
       <ProjectFormFields form={form} setForm={setForm} mode="add" />
-
-      <Button type="submit" className="w-full">
-        <Plus className="mr-2 inline h-4 w-4" /> Create Project
-      </Button>
+      <Button type="submit" className="w-full"><Plus className="mr-2 inline h-4 w-4" /> Create Project</Button>
     </form>
   );
 }
@@ -703,11 +561,11 @@ function SelectedProjectEditor({ selectedProject, onSaveProject, embedded = fals
     setForm(toEditorForm(selectedProject));
   }, [selectedProject?.id]);
 
-  const priority = classifyPriority({
+  const priority = classifyPriority(normaliseWeights({
     financial: form.financialWeight,
     environmental: form.environmentalWeight,
     social: form.socialWeight,
-  });
+  }));
 
   function handleSave(event) {
     event.preventDefault();
@@ -756,36 +614,21 @@ function SelectedProjectEditor({ selectedProject, onSaveProject, embedded = fals
     <>
       <div className="mb-4">
         <h2 className="text-lg font-semibold">Selected Project Information</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          View and edit the selected project scores and baseline weights.
-        </p>
+        <p className="mt-1 text-sm text-slate-500">View and edit the selected project scores and initial weights.</p>
       </div>
-
       <div className="mb-4 rounded-2xl bg-blue-50 p-3 text-sm text-blue-800">
         <strong>Priority Classification: {priority.label}</strong>
-        <p className="mt-1">
-          This classification is based on the selected project's initial weighting assumption:{" "}
-          {priority.reason}.
-        </p>
+        <p className="mt-1">This classification is based on the selected project's initial weighting assumption: {priority.reason}.</p>
       </div>
-
       <form onSubmit={handleSave} className="space-y-4 rounded-3xl bg-slate-50 p-4">
         <ProjectFormFields form={form} setForm={setForm} mode="edit" />
-
-        <Button type="submit" className="w-full">
-          <Save className="mr-2 inline h-4 w-4" /> Save Project Changes
-        </Button>
+        <Button type="submit" className="w-full"><Save className="mr-2 inline h-4 w-4" /> Save Project Changes</Button>
       </form>
     </>
   );
 
   if (embedded) return editorBody;
-
-  return (
-    <Card>
-      <CardContent>{editorBody}</CardContent>
-    </Card>
-  );
+  return <Card><CardContent>{editorBody}</CardContent></Card>;
 }
 
 function ProjectSelection({
@@ -794,9 +637,9 @@ function ProjectSelection({
   selectedProject,
   onSelectProject,
   onDeleteProject,
-  onResetProjects,
+  onRestoreSampleProjects,
+  onResetData,
   onSetEqualWeights,
-  onUseBaseline,
   onSaveProject,
 }) {
   const [showProjectInfo, setShowProjectInfo] = useState(false);
@@ -809,10 +652,7 @@ function ProjectSelection({
             <Database className="h-5 w-5" />
             <h2 className="text-lg font-semibold">Project Selection</h2>
           </div>
-
-          <Button className="px-3 py-2" onClick={() => setShowProjectInfo((prev) => !prev)}>
-            {showProjectInfo ? "Hide Info" : "Edit Info"}
-          </Button>
+          <Button className="px-3 py-2" onClick={() => setShowProjectInfo((prev) => !prev)}>{showProjectInfo ? "Hide Info" : "Edit Info"}</Button>
         </div>
 
         <div className="rounded-2xl bg-slate-50 p-4">
@@ -822,50 +662,59 @@ function ProjectSelection({
             onChange={(event) => onSelectProject(event.target.value)}
             className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
           >
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.name}
-              </option>
-            ))}
+            {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </select>
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-2">
-          <Button variant="outline" onClick={onUseBaseline}>
-            <RotateCcw className="mr-2 inline h-4 w-4" /> Baseline
-          </Button>
-
-          <Button variant="outline" onClick={onSetEqualWeights}>
-            <Equal className="mr-2 inline h-4 w-4" /> Equal
-          </Button>
+          <Button variant="outline" onClick={onResetData}><RotateCcw className="mr-2 inline h-4 w-4" /> Reset Data</Button>
+          <Button variant="outline" onClick={onSetEqualWeights}><Equal className="mr-2 inline h-4 w-4" /> Equal</Button>
         </div>
 
         <div className="mt-2 grid grid-cols-2 gap-2">
-          <Button variant="outline" onClick={onResetProjects}>
-            <RotateCcw className="mr-2 inline h-4 w-4" /> Reset Data
-          </Button>
-
-          <Button variant="danger" onClick={onDeleteProject}>
-            <Trash2 className="mr-2 inline h-4 w-4" /> Delete
-          </Button>
+          <Button variant="outline" onClick={onRestoreSampleProjects}><RotateCcw className="mr-2 inline h-4 w-4" /> Restore Samples</Button>
+          <Button variant="danger" onClick={onDeleteProject}><Trash2 className="mr-2 inline h-4 w-4" /> Delete</Button>
         </div>
+
+        <p className="mt-3 rounded-2xl bg-slate-50 p-3 text-xs text-slate-500">
+          Reset Data applies the selected project's initial weights. Restore Samples resets the whole dashboard project list.
+        </p>
 
         {showProjectInfo ? (
           <div className="mt-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
-            <SelectedProjectEditor
-              selectedProject={selectedProject}
-              onSaveProject={onSaveProject}
-              embedded
-            />
+            <SelectedProjectEditor selectedProject={selectedProject} onSaveProject={onSaveProject} embedded />
           </div>
         ) : (
-          <p className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
-            Open Edit Info to view or change this project's scores, baseline weights, description
-            and data assumptions.
-          </p>
+          <p className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Open Edit Info to view or change this project's scores, initial weights, description and data assumptions.</p>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function WeightDonut({ weights }) {
+  const financialEnd = weights.financial;
+  const environmentalEnd = weights.financial + weights.environmental;
+  const background = `conic-gradient(#2563eb 0% ${financialEnd}%, #059669 ${financialEnd}% ${environmentalEnd}%, #9333ea ${environmentalEnd}% 100%)`;
+
+  return (
+    <div className="rounded-3xl bg-slate-50 p-4">
+      <div className="flex items-center gap-4">
+        <div className="relative h-28 w-28 shrink-0 rounded-full shadow-inner" style={{ background }}>
+          <div className="absolute inset-4 flex items-center justify-center rounded-full bg-white text-center shadow-sm">
+            <div>
+              <p className="text-xs text-slate-500">Total</p>
+              <p className="text-xl font-bold">100%</p>
+            </div>
+          </div>
+        </div>
+        <div className="grid flex-1 grid-cols-1 gap-2 text-sm">
+          <div className="flex items-center justify-between rounded-2xl bg-blue-50 px-3 py-2 text-blue-700"><span>Financial</span><strong>{weights.financial}%</strong></div>
+          <div className="flex items-center justify-between rounded-2xl bg-emerald-50 px-3 py-2 text-emerald-700"><span>Environmental</span><strong>{weights.environmental}%</strong></div>
+          <div className="flex items-center justify-between rounded-2xl bg-purple-50 px-3 py-2 text-purple-700"><span>Social</span><strong>{weights.social}%</strong></div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -878,7 +727,6 @@ function RangeSlider({ label, value, onChange, color, type }) {
         <span>{label}</span>
         <strong>{value}%</strong>
       </div>
-
       <input
         type="range"
         min="0"
@@ -893,8 +741,9 @@ function RangeSlider({ label, value, onChange, color, type }) {
 }
 
 function WeightControls({ weights, setWeights }) {
-  const total = weights.financial + weights.environmental + weights.social;
-  const normalised = normaliseWeights(weights);
+  function updateWeight(key, value) {
+    setWeights((prev) => redistributeWeights(prev, key, value));
+  }
 
   return (
     <div className="space-y-4">
@@ -908,7 +757,6 @@ function WeightControls({ weights, setWeights }) {
           -webkit-appearance: none;
           cursor: pointer;
         }
-
         .weight-slider::-webkit-slider-thumb {
           appearance: none;
           -webkit-appearance: none;
@@ -920,19 +768,9 @@ function WeightControls({ weights, setWeights }) {
           box-shadow: 0 2px 8px rgba(15, 23, 42, 0.28);
           cursor: pointer;
         }
-
-        .weight-slider-blue::-webkit-slider-thumb {
-          border-color: #2563eb;
-        }
-
-        .weight-slider-green::-webkit-slider-thumb {
-          border-color: #059669;
-        }
-
-        .weight-slider-purple::-webkit-slider-thumb {
-          border-color: #9333ea;
-        }
-
+        .weight-slider-blue::-webkit-slider-thumb { border-color: #2563eb; }
+        .weight-slider-green::-webkit-slider-thumb { border-color: #059669; }
+        .weight-slider-purple::-webkit-slider-thumb { border-color: #9333ea; }
         .weight-slider::-moz-range-thumb {
           width: 22px;
           height: 22px;
@@ -942,72 +780,23 @@ function WeightControls({ weights, setWeights }) {
           box-shadow: 0 2px 8px rgba(15, 23, 42, 0.28);
           cursor: pointer;
         }
-
-        .weight-slider-blue::-moz-range-thumb {
-          border-color: #2563eb;
-        }
-
-        .weight-slider-green::-moz-range-thumb {
-          border-color: #059669;
-        }
-
-        .weight-slider-purple::-moz-range-thumb {
-          border-color: #9333ea;
-        }
+        .weight-slider-blue::-moz-range-thumb { border-color: #2563eb; }
+        .weight-slider-green::-moz-range-thumb { border-color: #059669; }
+        .weight-slider-purple::-moz-range-thumb { border-color: #9333ea; }
       `}</style>
 
       <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">
-        Adjust stakeholder or policy weights. The dashboard normalises the raw total to 100 before
-        calculating rankings.
+        Adjust stakeholder or policy weights. The three weights always add up to 100%.
       </div>
 
-      <RangeSlider
-        label="Financial weight"
-        value={weights.financial}
-        onChange={(value) => setWeights((prev) => ({ ...prev, financial: value }))}
-        color="#2563eb"
-        type="blue"
-      />
+      <WeightDonut weights={weights} />
 
-      <RangeSlider
-        label="Environmental weight"
-        value={weights.environmental}
-        onChange={(value) => setWeights((prev) => ({ ...prev, environmental: value }))}
-        color="#059669"
-        type="green"
-      />
-
-      <RangeSlider
-        label="Social weight"
-        value={weights.social}
-        onChange={(value) => setWeights((prev) => ({ ...prev, social: value }))}
-        color="#9333ea"
-        type="purple"
-      />
-
-      <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-2xl bg-blue-50 p-3 text-center text-blue-700">
-          <p className="text-xs">F normalised</p>
-          <p className="text-2xl font-bold">{normalised.financial}%</p>
-        </div>
-
-        <div className="rounded-2xl bg-emerald-50 p-3 text-center text-emerald-700">
-          <p className="text-xs">E normalised</p>
-          <p className="text-2xl font-bold">{normalised.environmental}%</p>
-        </div>
-
-        <div className="rounded-2xl bg-purple-50 p-3 text-center text-purple-700">
-          <p className="text-xs">S normalised</p>
-          <p className="text-2xl font-bold">{normalised.social}%</p>
-        </div>
-      </div>
+      <RangeSlider label="Financial weight" value={weights.financial} onChange={(value) => updateWeight("financial", value)} color="#2563eb" type="blue" />
+      <RangeSlider label="Environmental weight" value={weights.environmental} onChange={(value) => updateWeight("environmental", value)} color="#059669" type="green" />
+      <RangeSlider label="Social weight" value={weights.social} onChange={(value) => updateWeight("social", value)} color="#9333ea" type="purple" />
 
       <div className="rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-600">
-        Raw total: <strong>{total}%</strong>. Calculation uses:{" "}
-        <strong>
-          {normalised.financial}% / {normalised.environmental}% / {normalised.social}%
-        </strong>
-        .
+        Total: <strong>100%</strong>. Current calculation uses: <strong>{weights.financial}% / {weights.environmental}% / {weights.social}%</strong>.
       </div>
     </div>
   );
@@ -1019,28 +808,16 @@ function ProjectCard({ project, index, selected, onSelect, onDelete, activeWeigh
   return (
     <button
       onClick={onSelect}
-      className={`w-full rounded-3xl border p-4 text-left transition hover:scale-[1.01] ${
-        selected ? "border-slate-950 bg-white shadow-sm" : "border-slate-200 bg-slate-50"
-      }`}
+      className={`w-full rounded-3xl border p-4 text-left transition hover:scale-[1.01] ${selected ? "border-slate-950 bg-white shadow-sm" : "border-slate-200 bg-slate-50"}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex gap-3">
-          <div
-            className={`flex h-9 w-9 items-center justify-center rounded-2xl text-sm font-bold ${
-              index === 0 ? "bg-slate-950 text-white" : "bg-white text-slate-700"
-            }`}
-          >
-            {index + 1}
-          </div>
-
+          <div className={`flex h-9 w-9 items-center justify-center rounded-2xl text-sm font-bold ${index === 0 ? "bg-slate-950 text-white" : "bg-white text-slate-700"}`}>{index + 1}</div>
           <div>
             <h3 className="font-semibold">{project.name}</h3>
-            <p className="text-sm text-slate-500">
-              {project.type} · {project.location}
-            </p>
+            <p className="text-sm text-slate-500">{project.type} · {project.location}</p>
           </div>
         </div>
-
         <div className="text-right">
           <p className="text-3xl font-bold">{project.score}</p>
           <p className="text-xs text-slate-500">/100</p>
@@ -1048,55 +825,34 @@ function ProjectCard({ project, index, selected, onSelect, onDelete, activeWeigh
       </div>
 
       <div className="mt-4 rounded-2xl bg-white/70 p-3">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Weighted Score Contribution
-        </p>
-
+        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Applied Current Weights</p>
         <div className="space-y-3 text-xs">
           <div>
-            <div className="mb-1 flex justify-between">
-              <span>
-                Financial: {project.financialScore} × {activeWeights.financial}%
-              </span>
-              <strong>{contributions.financial}</strong>
-            </div>
-            <ScoreBar value={contributions.financial} tone="blue" max={100} />
+            <div className="mb-1 flex justify-between"><span>Financial weight</span><strong>{activeWeights.financial}%</strong></div>
+            <ScoreBar value={activeWeights.financial} tone="blue" max={100} />
+            <p className="mt-1 text-slate-500">Contribution: {project.financialScore} × {activeWeights.financial}% = {contributions.financial}</p>
           </div>
-
           <div>
-            <div className="mb-1 flex justify-between">
-              <span>
-                Environmental: {project.environmentalScore} × {activeWeights.environmental}%
-              </span>
-              <strong>{contributions.environmental}</strong>
-            </div>
-            <ScoreBar value={contributions.environmental} tone="green" max={100} />
+            <div className="mb-1 flex justify-between"><span>Environmental weight</span><strong>{activeWeights.environmental}%</strong></div>
+            <ScoreBar value={activeWeights.environmental} tone="green" max={100} />
+            <p className="mt-1 text-slate-500">Contribution: {project.environmentalScore} × {activeWeights.environmental}% = {contributions.environmental}</p>
           </div>
-
           <div>
-            <div className="mb-1 flex justify-between">
-              <span>
-                Social: {project.socialScore} × {activeWeights.social}%
-              </span>
-              <strong>{contributions.social}</strong>
-            </div>
-            <ScoreBar value={contributions.social} tone="purple" max={100} />
+            <div className="mb-1 flex justify-between"><span>Social weight</span><strong>{activeWeights.social}%</strong></div>
+            <ScoreBar value={activeWeights.social} tone="purple" max={100} />
+            <p className="mt-1 text-slate-500">Contribution: {project.socialScore} × {activeWeights.social}% = {contributions.social}</p>
           </div>
         </div>
       </div>
 
       <div className="mt-3 rounded-2xl bg-slate-50 p-3 text-xs text-slate-600">
-        Original indicator scores: F {project.financialScore} · E {project.environmentalScore} ·
-        S {project.socialScore}
+        Original indicator scores: F {project.financialScore} · E {project.environmentalScore} · S {project.socialScore}
       </div>
 
       <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
         <span>Confidence: {project.confidence}</span>
-        <span className="flex items-center gap-1">
-          Open details <ChevronRight className="h-4 w-4" />
-        </span>
+        <span className="flex items-center gap-1">Open details <ChevronRight className="h-4 w-4" /></span>
       </div>
-
       <div className="mt-3 flex justify-end">
         <span
           role="button"
@@ -1116,93 +872,50 @@ function ProjectCard({ project, index, selected, onSelect, onDelete, activeWeigh
 
 function SensitivityAnalysis({ projects, activeWeights }) {
   const scenarios = useMemo(() => getScenarioList(activeWeights), [activeWeights]);
-  const scenarioResults = useMemo(
-    () => computeScenarioResults(projects, scenarios),
-    [projects, scenarios]
-  );
-
-  const robustness = useMemo(
-    () => getRobustnessSummary(projects, scenarioResults),
-    [projects, scenarioResults]
-  );
+  const scenarioResults = useMemo(() => computeScenarioResults(projects, scenarios), [projects, scenarios]);
+  const robustness = useMemo(() => getRobustnessSummary(projects, scenarioResults), [projects, scenarioResults]);
 
   const chartData = useMemo(() => {
     return scenarios.map((scenario) => {
       const row = { scenario: scenario.shortName };
       const result = scenarioResults.find((item) => item.id === scenario.id);
-
       projects.forEach((project) => {
         const ranked = result?.ranked.find((item) => item.id === project.id);
         row[project.shortName] = ranked?.rank ?? null;
       });
-
       return row;
     });
   }, [projects, scenarios, scenarioResults]);
 
-  const mostRobust = [...robustness].sort(
-    (a, b) => a.rankRange - b.rankRange || a.averageRank - b.averageRank
-  )[0];
-
-  const mostSensitive = [...robustness].sort(
-    (a, b) => b.rankRange - a.rankRange || a.averageRank - b.averageRank
-  )[0];
-
-  const topProject = [...robustness].sort(
-    (a, b) => b.topCount - a.topCount || a.averageRank - b.averageRank
-  )[0];
+  const mostRobust = [...robustness].sort((a, b) => a.rankRange - b.rankRange || a.averageRank - b.averageRank)[0];
+  const mostSensitive = [...robustness].sort((a, b) => b.rankRange - a.rankRange || a.averageRank - b.averageRank)[0];
+  const topProject = [...robustness].sort((a, b) => b.topCount - a.topCount || a.averageRank - b.averageRank)[0];
 
   return (
     <Card>
       <CardContent>
         <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
           <div>
-            <div className="flex items-center gap-2">
-              <LineChartIcon className="h-5 w-5" />
-              <h2 className="text-xl font-semibold">Sensitivity Analysis & Decision Robustness</h2>
-            </div>
-            <p className="mt-1 text-sm text-slate-500">
-              Compare how project rankings respond to alternative weighting assumptions.
-            </p>
+            <div className="flex items-center gap-2"><LineChartIcon className="h-5 w-5" /><h2 className="text-xl font-semibold">Sensitivity Analysis & Decision Robustness</h2></div>
+            <p className="mt-1 text-sm text-slate-500">Compare how project rankings respond to alternative weighting assumptions.</p>
           </div>
-
-          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
-            <ShieldCheck className="h-4 w-4" /> Robust projects stay highly ranked across scenarios
-          </div>
+          <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm"><ShieldCheck className="h-4 w-4" /> Robust projects stay highly ranked across scenarios</div>
         </div>
 
         <div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-2">
           <div className="rounded-3xl border border-slate-200 bg-white p-4">
-            <h3 className="mb-1 flex items-center gap-2 font-semibold">
-              <BarChart3 className="h-4 w-4" /> Ranking Changes Across Scenarios
-            </h3>
-            <p className="mb-4 text-sm text-slate-500">
-              Lower rank position is better. Rank 1 is best.
-            </p>
-
+            <h3 className="mb-1 flex items-center gap-2 font-semibold"><BarChart3 className="h-4 w-4" /> Ranking Changes Across Scenarios</h3>
+            <p className="mb-4 text-sm text-slate-500">Lower rank position is better. Rank 1 is best.</p>
             <div className="h-80">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={chartData} margin={{ top: 20, right: 20, bottom: 20, left: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="scenario" tick={{ fontSize: 11 }} />
-                  <YAxis
-                    reversed
-                    domain={[1, Math.max(projects.length, 1)]}
-                    allowDecimals={false}
-                    tick={{ fontSize: 11 }}
-                  />
+                  <YAxis reversed domain={[1, Math.max(projects.length, 1)]} allowDecimals={false} tick={{ fontSize: 11 }} />
                   <Tooltip />
                   <Legend />
                   {projects.map((project, index) => (
-                    <Line
-                      key={project.id}
-                      type="monotone"
-                      dataKey={project.shortName}
-                      stroke={lineColors[index % lineColors.length]}
-                      strokeWidth={2}
-                      dot={{ r: 4 }}
-                      activeDot={{ r: 6 }}
-                    />
+                    <Line key={project.id} type="monotone" dataKey={project.shortName} stroke={lineColors[index % lineColors.length]} strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                   ))}
                 </LineChart>
               </ResponsiveContainer>
@@ -1210,46 +923,28 @@ function SensitivityAnalysis({ projects, activeWeights }) {
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-4">
-            <h3 className="mb-2 flex items-center gap-2 font-semibold">
-              <ListChecks className="h-4 w-4" /> Scenario Ranking Table
-            </h3>
-            <p className="mb-4 text-sm text-slate-500">
-              Each cell shows the project rank first, followed by its weighted score out of 100
-              under that weighting scenario.
-            </p>
-
+            <h3 className="mb-2 flex items-center gap-2 font-semibold"><ListChecks className="h-4 w-4" /> Scenario Ranking Table</h3>
+            <p className="mb-4 text-sm text-slate-500">Each cell shows the project rank first, followed by its weighted score out of 100 under that weighting scenario.</p>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="bg-slate-50 text-left">
                     <th className="border border-slate-200 p-3">Project</th>
                     {scenarios.map((scenario) => (
-                      <th key={scenario.id} className="border border-slate-200 p-3 text-center">
-                        <div className="font-semibold">{scenario.shortName}</div>
-                        <div className="mt-1 text-xs font-normal text-slate-500">Rank + Score</div>
-                      </th>
+                      <th key={scenario.id} className="border border-slate-200 p-3 text-center"><div className="font-semibold">{scenario.shortName}</div><div className="mt-1 text-xs font-normal text-slate-500">Rank + Score</div></th>
                     ))}
                   </tr>
                 </thead>
-
                 <tbody>
                   {projects.map((project) => (
                     <tr key={project.id}>
-                      <td className="border border-slate-200 p-3 font-semibold">
-                        {project.shortName}
-                      </td>
-
+                      <td className="border border-slate-200 p-3 font-semibold">{project.shortName}</td>
                       {scenarioResults.map((scenario) => {
                         const result = scenario.ranked.find((item) => item.id === project.id);
-
                         return (
                           <td key={scenario.id} className="border border-slate-200 p-3 text-center">
-                            <div className="font-semibold text-slate-900">
-                              Rank {result?.rank ?? "—"}
-                            </div>
-                            <div className="mt-1 text-xs text-slate-500">
-                              Score {result?.score ?? "—"}/100
-                            </div>
+                            <div className="font-semibold text-slate-900">Rank {result?.rank ?? "—"}</div>
+                            <div className="mt-1 text-xs text-slate-500">Score {result?.score ?? "—"}/100</div>
                           </td>
                         );
                       })}
@@ -1258,50 +953,17 @@ function SensitivityAnalysis({ projects, activeWeights }) {
                 </tbody>
               </table>
             </div>
-
-            <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600">
-              <strong>How to read this table:</strong> a lower rank is better. For example,{" "}
-              <span className="font-semibold">Rank 1, Score 66.8/100</span> means the project is
-              ranked first under that scenario and receives a weighted score of 66.8 out of 100.
-            </div>
+            <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm text-slate-600"><strong>How to read this table:</strong> a lower rank is better. For example, <span className="font-semibold">Rank 1, Score 66.8/100</span> means the project is ranked first under that scenario and receives a weighted score of 66.8 out of 100.</div>
           </div>
         </div>
 
         <div className="mt-5 rounded-3xl border border-blue-100 bg-blue-50 p-5">
-          <h3 className="mb-3 flex items-center gap-2 font-semibold text-blue-800">
-            <Info className="h-5 w-5" /> Key Insights
-          </h3>
-
+          <h3 className="mb-3 flex items-center gap-2 font-semibold text-blue-800"><Info className="h-5 w-5" /> Key Insights</h3>
           <div className="space-y-3 text-sm leading-6 text-slate-700">
-            {topProject && (
-              <p>
-                <strong>{topProject.shortName}</strong> is top-ranked in{" "}
-                {topProject.topCount} out of {scenarios.length} scenarios, indicating its overall
-                performance under changing stakeholder priorities.
-              </p>
-            )}
-
-            {mostRobust && (
-              <p>
-                <strong>{mostRobust.shortName}</strong> has the smallest ranking movement across
-                scenarios ({mostRobust.bestRank} to {mostRobust.worstRank}), suggesting stronger
-                decision robustness.
-              </p>
-            )}
-
-            {mostSensitive && mostSensitive.rankRange > 0 && (
-              <p>
-                <strong>{mostSensitive.shortName}</strong> changes the most across scenarios (
-                {mostSensitive.bestRank} to {mostSensitive.worstRank}), so its ranking may require
-                additional review or justification.
-              </p>
-            )}
-
-            <p>
-              Projects that remain highly ranked under financial-priority, environmental-priority,
-              social-priority and equal-weight scenarios can be treated as more robust decision
-              options.
-            </p>
+            {topProject && <p><strong>{topProject.shortName}</strong> is top-ranked in {topProject.topCount} out of {scenarios.length} scenarios, indicating its overall performance under changing stakeholder priorities.</p>}
+            {mostRobust && <p><strong>{mostRobust.shortName}</strong> has the smallest ranking movement across scenarios ({mostRobust.bestRank} to {mostRobust.worstRank}), suggesting stronger decision robustness.</p>}
+            {mostSensitive && mostSensitive.rankRange > 0 && <p><strong>{mostSensitive.shortName}</strong> changes the most across scenarios ({mostSensitive.bestRank} to {mostSensitive.worstRank}), so its ranking may require additional review or justification.</p>}
+            <p>Projects that remain highly ranked under financial-priority, environmental-priority, social-priority and equal-weight scenarios can be treated as more robust decision options.</p>
           </div>
         </div>
       </CardContent>
@@ -1317,22 +979,18 @@ export default function MultiCriteriaDashboard() {
   const [showAddProject, setShowAddProject] = useState(false);
   const [activeWeights, setActiveWeights] = useState({ financial: 33, environmental: 33, social: 34 });
 
-  const normalisedWeights = useMemo(() => normaliseWeights(activeWeights), [activeWeights]);
-
-  const selectedProject = useMemo(() => {
-    return projects.find((project) => project.id === selectedProjectId) || projects[0] || null;
-  }, [projects, selectedProjectId]);
+  const selectedProject = useMemo(() => projects.find((project) => project.id === selectedProjectId) || projects[0] || null, [projects, selectedProjectId]);
 
   const rankedProjects = useMemo(() => {
-    return rankProjects(projects, normalisedWeights).filter(
+    return rankProjects(projects, activeWeights).filter(
       (project) =>
         project.name.toLowerCase().includes(query.toLowerCase()) ||
         project.type.toLowerCase().includes(query.toLowerCase()) ||
         project.location.toLowerCase().includes(query.toLowerCase())
     );
-  }, [projects, normalisedWeights, query]);
+  }, [projects, activeWeights, query]);
 
-  const selectedScore = selectedProject ? calculateScore(selectedProject, normalisedWeights) : null;
+  const selectedScore = selectedProject ? calculateScore(selectedProject, activeWeights) : null;
 
   const radarData = selectedProject
     ? [
@@ -1342,10 +1000,7 @@ export default function MultiCriteriaDashboard() {
       ]
     : [];
 
-  const rankingChartData = rankedProjects.map((project) => ({
-    name: project.shortName,
-    score: project.score,
-  }));
+  const rankingChartData = rankedProjects.map((project) => ({ name: project.shortName, score: project.score }));
 
   function updateProjects(nextProjects) {
     setProjects(nextProjects);
@@ -1365,84 +1020,45 @@ export default function MultiCriteriaDashboard() {
   }
 
   function handleSaveProject(updatedProject) {
-    const nextProjects = projects.map((project) =>
-      project.id === updatedProject.id ? updatedProject : project
-    );
-
+    const nextProjects = projects.map((project) => (project.id === updatedProject.id ? updatedProject : project));
     updateProjects(nextProjects);
     setSelectedProjectId(updatedProject.id);
   }
 
   function handleDeleteProject(projectId = selectedProjectId) {
-    const confirmed = window.confirm(
-      "Delete this project? This only removes it from this browser's local dashboard data."
-    );
+    const confirmed = window.confirm("Delete this project? This only removes it from this browser's local dashboard data.");
     if (!confirmed) return;
-
     const nextProjects = projects.filter((project) => project.id !== projectId);
     updateProjects(nextProjects);
-
     const nextSelected = nextProjects[0];
     setSelectedProjectId(nextSelected?.id || "");
   }
 
-  function resetProjects() {
-    const confirmed = window.confirm("Reset all project data to the default sample set?");
+  function restoreSampleProjects() {
+    const confirmed = window.confirm("Restore the default sample project list? This will replace project data stored in this browser.");
     if (!confirmed) return;
-
     updateProjects(defaultProjects);
     setSelectedProjectId(defaultProjects[0].id);
     setActiveWeights({ financial: 33, environmental: 33, social: 34 });
   }
 
-  function useBaselineWeights() {
-    if (selectedProject?.initialWeights) {
-      setActiveWeights(selectedProject.initialWeights);
-    }
+  function resetDataToSelectedProjectWeights() {
+    if (selectedProject?.initialWeights) setActiveWeights(selectedProject.initialWeights);
   }
 
   return (
     <div className="min-h-screen bg-slate-100 p-6 text-slate-900">
-      <motion.div
-        initial={{ opacity: 0, y: 14 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.45 }}
-        className="mx-auto max-w-7xl space-y-5"
-      >
+      <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.45 }} className="mx-auto max-w-7xl space-y-5">
         <div className="flex flex-col justify-between gap-5 rounded-3xl bg-slate-950 p-6 text-white shadow-lg lg:flex-row lg:items-center">
           <div>
-            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm text-slate-200">
-              <Building2 className="h-4 w-4" /> Council Infrastructure Decision Dashboard
-            </div>
-
-            <h1 className="text-3xl font-semibold tracking-tight">
-              Multi-Criteria Infrastructure Evaluation Dashboard
-            </h1>
-
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">
-              Compare infrastructure projects using financial, environmental and social scores.
-              Adjust stakeholder weights and test ranking robustness with sensitivity analysis.
-            </p>
+            <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-sm text-slate-200"><Building2 className="h-4 w-4" /> Council Infrastructure Decision Dashboard</div>
+            <h1 className="text-3xl font-semibold tracking-tight">Multi-Criteria Infrastructure Evaluation Dashboard</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">Compare infrastructure projects using financial, environmental and social scores. Adjust stakeholder weights and test ranking robustness with sensitivity analysis.</p>
           </div>
-
           <div className="grid grid-cols-3 gap-3 rounded-2xl bg-white/10 p-4 text-center">
-            <div>
-              <p className="text-xs text-slate-300">Projects</p>
-              <p className="text-2xl font-bold">{projects.length}</p>
-            </div>
-
-            <div>
-              <p className="text-xs text-slate-300">Top Score</p>
-              <p className="text-2xl font-bold">{rankedProjects[0]?.score ?? "—"}</p>
-            </div>
-
-            <div>
-              <p className="text-xs text-slate-300">Active Weights</p>
-              <p className="text-lg font-bold">
-                {normalisedWeights.financial}/{normalisedWeights.environmental}/
-                {normalisedWeights.social}
-              </p>
-            </div>
+            <div><p className="text-xs text-slate-300">Projects</p><p className="text-2xl font-bold">{projects.length}</p></div>
+            <div><p className="text-xs text-slate-300">Top Score</p><p className="text-2xl font-bold">{rankedProjects[0]?.score ?? "—"}</p></div>
+            <div><p className="text-xs text-slate-300">Active Weights</p><p className="text-lg font-bold">{activeWeights.financial}/{activeWeights.environmental}/{activeWeights.social}</p></div>
           </div>
         </div>
 
@@ -1454,66 +1070,34 @@ export default function MultiCriteriaDashboard() {
               selectedProject={selectedProject}
               onSelectProject={handleSelectProject}
               onDeleteProject={() => handleDeleteProject(selectedProjectId)}
-              onResetProjects={resetProjects}
+              onRestoreSampleProjects={restoreSampleProjects}
+              onResetData={resetDataToSelectedProjectWeights}
               onSetEqualWeights={() => setActiveWeights({ financial: 33, environmental: 33, social: 34 })}
-              onUseBaseline={useBaselineWeights}
               onSaveProject={handleSaveProject}
             />
 
             <Card>
               <CardContent>
                 <div className="mb-4 flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <Plus className="h-5 w-5" />
-                    <h2 className="text-lg font-semibold">Add Project</h2>
-                  </div>
-
-                  <Button className="px-3 py-2" onClick={() => setShowAddProject((prev) => !prev)}>
-                    {showAddProject ? "Hide" : "Add"}
-                  </Button>
+                  <div className="flex items-center gap-2"><Plus className="h-5 w-5" /><h2 className="text-lg font-semibold">Add Project</h2></div>
+                  <Button className="px-3 py-2" onClick={() => setShowAddProject((prev) => !prev)}>{showAddProject ? "Hide" : "Add"}</Button>
                 </div>
-
-                {showAddProject ? (
-                  <AddProjectForm onAdd={handleAddProject} />
-                ) : (
-                  <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">
-                    Use this section only when creating a new infrastructure option. Project
-                    selection and editing are handled separately above.
-                  </p>
-                )}
+                {showAddProject ? <AddProjectForm onAdd={handleAddProject} /> : <p className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">Use this section only when creating a new infrastructure option. Project selection and editing are handled separately above.</p>}
               </CardContent>
             </Card>
           </div>
 
           <Card className="lg:col-span-8">
             <CardContent>
-              <div className="mb-4 flex items-center gap-2">
-                <Settings className="h-5 w-5" />
-                <h2 className="text-lg font-semibold">Stakeholder Weight Adjustment</h2>
-              </div>
-
+              <div className="mb-4 flex items-center gap-2"><Settings className="h-5 w-5" /><h2 className="text-lg font-semibold">Stakeholder Weight Adjustment</h2></div>
               <div className="mb-4 rounded-2xl bg-slate-50 p-4">
                 <label className="mb-2 block text-sm font-medium">Stakeholder / Scenario Type</label>
-                <select
-                  value={stakeholderType}
-                  onChange={(event) => setStakeholderType(event.target.value)}
-                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
-                >
-                  {stakeholderTypes.map((type) => (
-                    <option key={type} value={type}>
-                      {type}
-                    </option>
-                  ))}
+                <select value={stakeholderType} onChange={(event) => setStakeholderType(event.target.value)} className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900">
+                  {stakeholderTypes.map((type) => <option key={type} value={type}>{type}</option>)}
                 </select>
               </div>
-
               <WeightControls weights={activeWeights} setWeights={setActiveWeights} />
-
-              <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm leading-5 text-slate-600">
-                <Info className="mb-2 h-4 w-4" />
-                Weights represent stakeholder or policy priorities. They do not change project
-                indicator scores; they change how scores are combined.
-              </div>
+              <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-sm leading-5 text-slate-600"><Info className="mb-2 h-4 w-4" /> Weights represent stakeholder or policy priorities. They do not change project indicator scores; they change how scores are combined.</div>
             </CardContent>
           </Card>
         </div>
@@ -1522,45 +1106,22 @@ export default function MultiCriteriaDashboard() {
           <Card className="lg:col-span-4">
             <CardContent>
               <h2 className="text-lg font-semibold">Selected Project Detail</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                {selectedProject?.name || "No project selected"}
-              </p>
-
+              <p className="mt-1 text-sm text-slate-500">{selectedProject?.name || "No project selected"}</p>
               {selectedProject && (
                 <>
                   <div className="my-5 grid grid-cols-3 gap-3">
-                    <div className="rounded-2xl bg-slate-950 p-4 text-center text-white">
-                      <p className="text-xs text-slate-300">Score</p>
-                      <p className="text-3xl font-bold">{selectedScore}</p>
-                    </div>
-
-                    <div className="rounded-2xl bg-white p-4 text-center shadow-sm">
-                      <p className="text-xs text-slate-500">Cost</p>
-                      <p className="text-lg font-bold">{selectedProject.cost}</p>
-                    </div>
-
-                    <div className="rounded-2xl bg-white p-4 text-center shadow-sm">
-                      <p className="text-xs text-slate-500">Time</p>
-                      <p className="text-lg font-bold">{selectedProject.time}</p>
-                    </div>
+                    <div className="rounded-2xl bg-slate-950 p-4 text-center text-white"><p className="text-xs text-slate-300">Score</p><p className="text-3xl font-bold">{selectedScore}</p></div>
+                    <div className="rounded-2xl bg-white p-4 text-center shadow-sm"><p className="text-xs text-slate-500">Cost</p><p className="text-lg font-bold">{selectedProject.cost}</p></div>
+                    <div className="rounded-2xl bg-white p-4 text-center shadow-sm"><p className="text-xs text-slate-500">Time</p><p className="text-lg font-bold">{selectedProject.time}</p></div>
                   </div>
-
-                  <p className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">
-                    {selectedProject.description}
-                  </p>
-
+                  <p className="rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">{selectedProject.description}</p>
                   <div className="mt-5 h-64 rounded-3xl bg-white p-3 shadow-sm">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart data={radarData}>
                         <PolarGrid />
                         <PolarAngleAxis dataKey="metric" tick={{ fontSize: 12 }} />
                         <PolarRadiusAxis angle={30} domain={[0, 100]} tick={{ fontSize: 10 }} />
-                        <Radar
-                          dataKey="value"
-                          stroke="#0f172a"
-                          fill="#0f172a"
-                          fillOpacity={0.25}
-                        />
+                        <Radar dataKey="value" stroke="#0f172a" fill="#0f172a" fillOpacity={0.25} />
                       </RadarChart>
                     </ResponsiveContainer>
                   </div>
@@ -1572,7 +1133,6 @@ export default function MultiCriteriaDashboard() {
           <Card className="lg:col-span-4">
             <CardContent>
               <h2 className="mb-4 text-lg font-semibold">Ranking Chart</h2>
-
               <div className="h-72 rounded-3xl bg-slate-50 p-4">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={rankingChartData}>
@@ -1589,37 +1149,12 @@ export default function MultiCriteriaDashboard() {
 
           <Card className="lg:col-span-4">
             <CardContent>
-              <div className="mb-4 flex items-center gap-2">
-                <Gauge className="h-5 w-5" />
-                <h2 className="text-lg font-semibold">Data Quality & Decision Notes</h2>
-              </div>
-
+              <div className="mb-4 flex items-center gap-2"><Gauge className="h-5 w-5" /><h2 className="text-lg font-semibold">Data Quality & Decision Notes</h2></div>
               <div className="space-y-3 text-sm leading-5">
-                <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-800">
-                  <strong>Transparent weighting</strong>
-                  <p className="mt-1">
-                    All financial, environmental and social weights are visible and adjustable
-                    before rankings are interpreted.
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-amber-50 p-3 text-amber-800">
-                  <strong>Data confidence</strong>
-                  <p className="mt-1">
-                    Environmental and social scores may rely on proxy data, stakeholder review or
-                    uncertain estimates.
-                  </p>
-                </div>
-
-                <div className="rounded-2xl bg-rose-50 p-3 text-rose-800">
-                  <strong>Decision-support boundary</strong>
-                  <p className="mt-1">
-                    The final score should not replace expert judgement, consultation or formal
-                    business case review.
-                  </p>
-                </div>
+                <div className="rounded-2xl bg-emerald-50 p-3 text-emerald-800"><strong>Transparent weighting</strong><p className="mt-1">All financial, environmental and social weights are visible and adjustable before rankings are interpreted.</p></div>
+                <div className="rounded-2xl bg-amber-50 p-3 text-amber-800"><strong>Data confidence</strong><p className="mt-1">Environmental and social scores may rely on proxy data, stakeholder review or uncertain estimates.</p></div>
+                <div className="rounded-2xl bg-rose-50 p-3 text-rose-800"><strong>Decision-support boundary</strong><p className="mt-1">The final score should not replace expert judgement, consultation or formal business case review.</p></div>
               </div>
-
               {selectedProject && (
                 <div className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm text-slate-700">
                   <AlertTriangle className="mb-2 h-4 w-4" />
@@ -1635,21 +1170,8 @@ export default function MultiCriteriaDashboard() {
 
         <Card>
           <CardContent>
-            <div className="mb-4 flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              <h2 className="text-lg font-semibold">Live Project Ranking</h2>
-            </div>
-
-            <div className="mb-4 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-              <Search className="h-4 w-4 text-slate-400" />
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search project or category"
-                className="w-full bg-transparent text-sm outline-none"
-              />
-            </div>
-
+            <div className="mb-4 flex items-center gap-2"><BarChart3 className="h-5 w-5" /><h2 className="text-lg font-semibold">Live Project Ranking</h2></div>
+            <div className="mb-4 flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 shadow-sm"><Search className="h-4 w-4 text-slate-400" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search project or category" className="w-full bg-transparent text-sm outline-none" /></div>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               {rankedProjects.map((project, index) => (
                 <ProjectCard
@@ -1659,14 +1181,14 @@ export default function MultiCriteriaDashboard() {
                   selected={selectedProject?.id === project.id}
                   onSelect={() => handleSelectProject(project.id)}
                   onDelete={() => handleDeleteProject(project.id)}
-                  activeWeights={normalisedWeights}
+                  activeWeights={activeWeights}
                 />
               ))}
             </div>
           </CardContent>
         </Card>
 
-        <SensitivityAnalysis projects={projects} activeWeights={normalisedWeights} />
+        <SensitivityAnalysis projects={projects} activeWeights={activeWeights} />
       </motion.div>
     </div>
   );
