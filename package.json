@@ -9,7 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tailwindcss/vite": "latest",
     "@vitejs/plugin-react": "latest",
+    "tailwindcss": "latest",
     "vite": "latest",
     "react": "latest",
     "react-dom": "latest",
